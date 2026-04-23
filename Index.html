@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twisp Store Check-In</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .loader { border: 4px solid #3f3f46; border-top: 4px solid #10b981; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="bg-zinc-950 text-zinc-100 min-h-screen flex items-center justify-center p-4 font-sans">
+
+    <div class="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-2xl relative overflow-hidden">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-black text-white tracking-tight">TWISP</h1>
+            <p class="text-zinc-400 text-sm font-medium mt-1 uppercase tracking-widest">Ops Tracker</p>
+        </div>
+
+        <div id="status-area" class="text-center py-8">
+            <button id="detect-btn" onclick="startDetection()" class="w-full py-5 bg-blue-600 hover:bg-blue-500 font-bold rounded-xl transition-all active:scale-95 text-lg shadow-lg shadow-blue-900/50">Detect My Store</button>
+            <div id="loading-spinner" class="hidden flex flex-col items-center justify-center space-y-4">
+                <div class="loader"></div>
+                <p class="text-zinc-400 text-sm animate-pulse">Acquiring GPS...</p>
+            </div>
+            <p id="error-msg" class="text-red-400 text-sm mt-4 hidden font-medium"></p>
+        </div>
+
+        <div id="action-dashboard" class="hidden space-y-6">
+            <div class="p-5 bg-zinc-800 rounded-xl border border-zinc-700 text-center shadow-inner">
+                <p class="text-xs text-zinc-400 uppercase tracking-widest mb-1">Current Location</p>
+                <p id="store-name-display" class="text-xl font-bold text-emerald-400"></p>
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+                <button onclick="attemptAction('Open')" class="w-full py-4 bg-emerald-600 hover:bg-emerald-500 font-bold rounded-xl transition-all active:scale-95 shadow-lg shadow-emerald-900/20">OPEN</button>
+                <button onclick="attemptAction('Close')" class="w-full py-4 bg-zinc-700 hover:bg-zinc-600 font-bold rounded-xl transition-all active:scale-95">CLOSE</button>
+            </div>
+        </div>
+
+        <div id="exception-modal" class="hidden absolute inset-0 bg-zinc-950/90 backdrop-blur-sm flex flex-col items-center justify-center p-6 z-50">
+            <div class="bg-zinc-900 border border-amber-500/50 p-6 rounded-2xl w-full shadow-2xl">
+                <div class="flex items-center space-x-2 mb-4">
+                    <span class="text-2xl">⚠️</span>
+                    <h2 id="modal-title" class="text-xl font-bold text-amber-500">Exception</h2>
+                </div>
+                <p id="modal-desc" class="text-sm text-zinc-300 mb-4"></p>
+                <textarea id="delay-reason" class="w-full bg-zinc-950 border border-zinc-700 rounded-xl p-4 mb-4 h-32 text-sm focus:border-amber-500 outline-none resize-none" placeholder="Reason..."></textarea>
+                <div class="flex space-x-3">
+                    <button onclick="cancelAction()" class="w-1/3 py-3 bg-zinc-800 hover:bg-zinc-700 font-bold rounded-xl text-sm">Cancel</button>
+                    <button id="modal-submit-btn" class="w-2/3 py-3 bg-amber-600 hover:bg-amber-500 font-bold rounded-xl text-sm">Submit</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="success-screen" class="hidden text-center py-12">
+            <div class="text-6xl mb-4">✅</div>
+            <h2 class="text-2xl font-bold text-white mb-2" id="success-title">Logged</h2>
+            <p class="text-zinc-400 text-sm" id="success-desc">You can now close this window.</p>
+            <button onclick="location.reload()" class="mt-6 text-sm text-zinc-500 underline">Back to start</button>
+        </div>
+    </div>
+
+    <script>
+        const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxMV8QsXEJnclCLEBYn3jZS0UQQcf6kmR7u5ZKohN9Oa4KtTirYhsMLUaQFKwPdV-Pimw/exec";
+        let currentSite = null, calculatedDistance = null, siteList = [];
+
+        function getDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371e3; const p1 = lat1 * Math.PI/180; const p2 = lat2 * Math.PI/180;
+            const dp = (lat2-lat1) * Math.PI/180; const dl = (lon2-lon1) * Math.PI/180;
+            const a = Math.sin(dp/2) * Math.sin(dp/2) + Math.cos(p1) * Math.cos(p2) * Math.sin(dl/2) * Math.sin(dl/2);
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        }
+
+        async function startDetection() {
+            document.getElementById('detect-btn').classList.add('hidden');
+            document.getElementById('loading-spinner').classList.remove('hidden');
+            document.getElementById('error-msg').classList.add('hidden');
+
+            try {
+                const response = await fetch(SCRIPT_URL);
+                siteList = await response.json();
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(processLocation, showError, { enableHighAccuracy: true, timeout: 10000 });
+                } else throw new Error("Geolocation not supported.");
+            } catch (err) { showError({ message: "Network error fetching data." }); }
+        }
+
+        function processLocation(position) {
+            let minDistance = Infinity;
+            siteList.forEach(site => {
+                const dist = getDistance(position.coords.latitude, position.coords.longitude, site["Lattitude"], site["Longitude"]);
+                if (dist < minDistance) { minDistance = dist; currentSite = site; }
+            });
+
+            if (minDistance <= 100) {
+                calculatedDistance = Math.round(minDistance);
+                document.getElementById('loading-spinner').classList.add('hidden');
+                document.getElementById('status-area').classList.add('hidden');
+                document.getElementById('store-name-display').innerText = currentSite["Store Name"];
+                document.getElementById('action-dashboard').classList.remove('hidden');
+            } else showError({ message: `Access Denied: You are ${Math.round(minDistance)}m away.` });
+        }
+
+        function parseSheetTime(timeVal) {
+            let t = new Date();
+            const match = String(timeVal).match(/(\d{1,2}):(\d{2})/);
+            if (match) t.setHours(parseInt(match[1]), parseInt(match[2]), 0, 0);
+            return t;
+        }
+
+        function attemptAction(action) {
+            const dayPrefix = ["Sun", "Mon", "Tues", "Wed", "Thurs", "Fri", "Sat"][new Date().getDay()];
+            const now = new Date();
+            
+            if (action === 'Open') {
+                const openStr = currentSite[`${dayPrefix} Opening`];
+                if (openStr && now > new Date(parseSheetTime(openStr).getTime() + 15*60000)) {
+                    showExceptionModal('Late Opening', 'You are clocking in past the scheduled time.', action, 'Late');
+                } else submitFinal(action, 'On-Time');
+            } 
+            else if (action === 'Close') {
+                const closeStr = currentSite[`${dayPrefix} Closing`];
+                if (closeStr && now < parseSheetTime(closeStr)) {
+                    showExceptionModal('Early Closure', 'You are closing before the scheduled time.', action, 'Early Closure');
+                } else submitFinal(action, 'On-Time');
+            }
+        }
+
+        function showExceptionModal(title, desc, action, status) {
+            document.getElementById('modal-title').innerText = title;
+            document.getElementById('modal-desc').innerText = desc;
+            const submitBtn = document.getElementById('modal-submit-btn');
+            submitBtn.onclick = () => submitFinal(action, status);
+            document.getElementById('exception-modal').classList.remove('hidden');
+        }
+
+        function submitFinal(action, status) {
+            const reason = document.getElementById('delay-reason').value.trim();
+            if ((status === 'Late' || status === 'Early Closure') && reason.length < 5) {
+                alert("Please provide a valid reason."); return;
+            }
+
+            document.getElementById('exception-modal').classList.add('hidden');
+            document.getElementById('action-dashboard').classList.add('hidden');
+            document.getElementById('status-area').classList.remove('hidden');
+            document.getElementById('loading-spinner').classList.remove('hidden');
+            document.getElementById('loading-spinner').innerHTML = `<div class="loader"></div><p class="text-zinc-400 mt-4">Saving securely...</p>`;
+
+            const payload = {
+                siteCode: currentSite["Site Code"], storeName: currentSite["Store Name"],
+                action: action, distance: calculatedDistance, status: status, reason: reason,
+                amEmail: currentSite["Am Email"], rmEmail: currentSite["RM Email"]
+            };
+
+            fetch(SCRIPT_URL, { method: "POST", body: JSON.stringify(payload) })
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('status-area').classList.add('hidden');
+                document.getElementById('success-screen').classList.remove('hidden');
+                if(data.result === 'duplicate') {
+                    document.getElementById('success-title').innerText = "Already Logged";
+                    document.getElementById('success-desc').innerText = `You have already logged an '${action}' event today.`;
+                }
+            }).catch(err => alert("Error saving to database."));
+        }
+
+        function cancelAction() {
+            document.getElementById('exception-modal').classList.add('hidden');
+            document.getElementById('delay-reason').value = "";
+        }
+
+        function showError(error) {
+            document.getElementById('loading-spinner').classList.add('hidden');
+            document.getElementById('detect-btn').classList.remove('hidden');
+            const errEl = document.getElementById('error-msg');
+            errEl.innerText = error.message; errEl.classList.remove('hidden');
+        }
+    </script>
+</body>
+</html>
